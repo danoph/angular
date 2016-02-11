@@ -308,46 +308,49 @@ export class UpgradeAdapter {
     var rootScopePrototype: any;
     var rootScope: angular.IRootScopeService;
     var hostViewFactoryRefMap: HostViewFactoryRefMap = {};
+    var downgradedComponents = this.downgradedComponents;
     var ng1Module = angular.module(this.idPrefix, modules);
-    var ng1compilePromise: Promise<any> = null;
-    ng1Module.value(NG2_INJECTOR, injector)
-        .value(NG2_ZONE, ngZone)
-        .value(NG2_COMPILER, compiler)
-        .value(NG2_HOST_VIEW_FACTORY_REF_MAP, hostViewFactoryRefMap)
-        .value(NG2_APP_VIEW_MANAGER, injector.get(AppViewManager))
-        .config([
-          '$provide',
-          (provide) => {
-            provide.decorator(NG1_ROOT_SCOPE, [
-              '$delegate',
-              function(rootScopeDelegate: angular.IRootScopeService) {
-                rootScopePrototype = rootScopeDelegate.constructor.prototype;
-                if (rootScopePrototype.hasOwnProperty('$apply')) {
-                  original$applyFn = rootScopePrototype.$apply;
-                  rootScopePrototype.$apply = (exp) => delayApplyExps.push(exp);
-                } else {
-                  throw new Error("Failed to find '$apply' on '$rootScope'!");
+    var ng1bootstrapPromise = new Promise(function(resolveBootstrap, rejectBootstrap) {
+      ng1Module.value(NG2_INJECTOR, injector)
+          .value(NG2_ZONE, ngZone)
+          .value(NG2_COMPILER, compiler)
+          .value(NG2_HOST_VIEW_FACTORY_REF_MAP, hostViewFactoryRefMap)
+          .value(NG2_APP_VIEW_MANAGER, injector.get(AppViewManager))
+          .config([
+            '$provide',
+            (provide) => {
+              provide.decorator(NG1_ROOT_SCOPE, [
+                '$delegate',
+                function(rootScopeDelegate: angular.IRootScopeService) {
+                  rootScopePrototype = rootScopeDelegate.constructor.prototype;
+                  if (rootScopePrototype.hasOwnProperty('$apply')) {
+                    original$applyFn = rootScopePrototype.$apply;
+                    rootScopePrototype.$apply = (exp) => delayApplyExps.push(exp);
+                  } else {
+                    throw new Error("Failed to find '$apply' on '$rootScope'!");
+                  }
+                  return rootScope = rootScopeDelegate;
                 }
-                return rootScope = rootScopeDelegate;
-              }
-            ]);
-          }
-        ])
-        .run([
-          '$injector',
-          '$rootScope',
-          (injector: angular.IInjectorService, rootScope: angular.IRootScopeService) => {
-            ng1Injector = injector;
-            ObservableWrapper.subscribe(ngZone.onTurnDone,
-                                        (_) => ngZone.runOutsideAngular(() => rootScope.$apply()));
-            ng1compilePromise =
-                UpgradeNg1ComponentAdapterBuilder.resolve(this.downgradedComponents, injector);
-          }
-        ]);
+              ]);
+            }
+          ])
+          .run([
+            '$injector',
+            '$rootScope',
+            (injector: angular.IInjectorService, rootScope: angular.IRootScopeService) => {
+              ng1Injector = injector;
+              ObservableWrapper.subscribe(
+                  ngZone.onTurnDone, (_) => ngZone.runOutsideAngular(() => rootScope.$apply()));
+              UpgradeNg1ComponentAdapterBuilder.resolve(downgradedComponents, injector)
+                  .then(resolveBootstrap)
+                  .catch(rejectBootstrap);
+            }
+          ]);
+    });
 
     angular.element(element).data(controllerKey(NG2_INJECTOR), injector);
     ngZone.run(() => { angular.bootstrap(element, [this.idPrefix], config); });
-    Promise.all([this.compileNg2Components(compiler, hostViewFactoryRefMap), ng1compilePromise])
+    Promise.all([this.compileNg2Components(compiler, hostViewFactoryRefMap), ng1bootstrapPromise])
         .then(() => {
           ngZone.run(() => {
             if (rootScopePrototype) {
